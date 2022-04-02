@@ -11,7 +11,13 @@ from gym import error, spaces, utils
 class Patient(Env):
 
     def __init__(self, behaviour_threshold=25, has_family=True,
-                 good_time=1, habituation=False, time_preference_update_step = 100000000):
+                 good_time=1, habituation=False, time_preference_update_step = 100000000,
+                 question_1=False, # If I see that I perform health-related activities better than my peers I feel motivated
+                 question_2=False, # I am keen to perform a simple activity for a longer time when I want to break my own record
+                 question_3=False, # I am keen to perform a simple activity for a longer time when I compete with others
+                 question_4=False, # When I am stressed I am unlikely to respond to any reminders for health-related activities
+                 question_5=False, # When I am tired I am unlikely to respond to any reminders for health-related activities
+                 ):
         self.behaviour_threshold = behaviour_threshold
         self.has_family = has_family
         self.good_time = good_time # 0 morning, 1 midday, 2 evening, 3 night
@@ -52,6 +58,14 @@ class Patient(Env):
         self.h_nonstationary = []
         self.observation_list = [self._get_current_state()]
         self.reset()
+
+        self.current_day_of_experiment = 0
+        self.question_1 = question_1
+        self.question_2 = question_2
+        self.question_3 = question_3
+        self.competition_threshold = 0.3
+        self.question_4 = question_4
+        self.question_5 = question_5
         # valence =1 #negative/ positive
         # arousal = 1 # low, mid, high
         # cognitive_load = 0 # low, high
@@ -71,9 +85,11 @@ class Patient(Env):
         self.activity_p = 0
         self.activity_s = 0
         self.hour_steps = 0
+        self.current_day_of_experiment = 0
         return self._get_current_state()
 
     def update_after_day(self):
+        self.current_day_of_experiment += 1
         if self.activity_s != 0:
             self.rr.append(self.activity_p / self.activity_s)
         else: # unsucessful training
@@ -199,7 +215,32 @@ class Patient(Env):
         """
         number_of_hours_slept = self.awake_list[-24:].count('sleeping')
         sufficient_sleep = 1 if number_of_hours_slept > 7 else 0
-        return self.valence + self.has_family + self.last_activity_score + sufficient_sleep
+
+        # If I see that I perform health-related activities better than my peers I feel motivated
+        perform_better_than_peers = 0
+        if self.question_1:
+            my_score = sum(self.activity_performed)
+            other_mean_score = self.current_day_of_experiment / 2 # each person by average make one exercise per 2 days
+            if my_score > other_mean_score:
+                perform_better_than_peers = 1
+
+        # I am keen to perform a simple activity for a longer time when I want to break my own record
+        being_on_fire = 0
+        if self.question_2:
+            if len(self.num_performed) == 0: # it is first day 
+                being_on_fire = 0
+            being_on_fire = 1 if sum(self.num_performed[-1])>0 else 0
+
+        # I am keen to perform a simple activity for a longer time when I compete with others
+        competition = 0
+        if self.question_3:
+            if self.location == 'other' and self.motion_activity_list[-1] == 'walking':
+                if self.competition_threshold > np.random.random():
+                     competition = 1
+        
+
+
+        return self.valence + self.has_family + self.last_activity_score + sufficient_sleep + perform_better_than_peers + being_on_fire + competition
 
     def get_ability(self):
         """"
@@ -237,7 +278,19 @@ class Patient(Env):
         load = 1 if self.cognitive_load == 0 else 0
         confidence = 1 if sum(self.activity_performed) >= self.confidence_threshold else 0
 
-        return confidence + load + not_tired_of_repeating_the_activity + ready
+        # When I am stressed I am unlikely to respond to any reminders for health-related activities
+        stress = 0
+        if self.question_4:
+            if self.arousal == 2 and self.valence == 0: # function of high arousal and low valence
+                stress = -1 
+        
+        # When I am tired I am unlikely to respond to any reminders for health-related activities
+        tired = 0
+        if self.question_5:
+             tired = -1 if self.number_of_hours_slept < 6 else 0
+
+
+        return confidence + load + not_tired_of_repeating_the_activity + ready + stress + tired
 
     def get_trigger(self):
         """"
