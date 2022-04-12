@@ -1,3 +1,5 @@
+from typing import List
+
 from gym import Env
 import numpy as np
 from collections import deque
@@ -11,16 +13,33 @@ from gym import error, spaces, utils
 class Patient(Env):
 
     def __init__(self, behaviour_threshold=25, has_family=True,
-                 good_time=1, habituation=False, time_preference_update_step = 100000000,
-                 question_1=False, # If I see that I perform health-related activities better than my peers I feel motivated
-                 question_2=False, # I am keen to perform a simple activity for a longer time when I want to break my own record
-                 question_3=False, # I am keen to perform a simple activity for a longer time when I compete with others
-                 question_4=False, # When I am stressed I am unlikely to respond to any reminders for health-related activities
-                 question_5=False, # When I am tired I am unlikely to respond to any reminders for health-related activities
+                 good_time=1, habituation=False, time_preference_update_step=100000000,
+                 patient_answers=None, competition_threshold=0.3, reconsider_chance=0.1
                  ):
+        """
+        patient_answers is a list containing anwsers to the questions below in order:
+        - If I see that I perform health-related activities better than my peers I feel motivated
+        - I am keen to perform a simple activity for a longer time when I want to break my own record
+        - I am keen to perform a simple activity for a longer time when I compete with others
+        - When I am stressed I am unlikely to respond to any reminders for health-related activities
+        - When I am tired I am unlikely to respond to any reminders for health-related activities
+
+        Every step we take into consideration the patient anwsers accordingly:
+        - Yes: always consider this aspect
+        - No: consider this aspect with a probability chosen in reconsider_chance
+        - Neutral: consider this aspect with a probability of 50%
+        """
+        if patient_answers is None:
+            self.patient_answers = ["neutral"] * 5
+        else:
+            self.patient_answers = [answer.lower() for answer in patient_answers]
+        self.competition_threshold = competition_threshold
+        self.reconsider_chance = reconsider_chance
+        self.patient_behaviour = [True] * 5
+
         self.behaviour_threshold = behaviour_threshold
         self.has_family = has_family
-        self.good_time = good_time # 0 morning, 1 midday, 2 evening, 3 night
+        self.good_time = good_time  # 0 morning, 1 midday, 2 evening, 3 night
         self.habituation = habituation
         self.time_preference_update_step = time_preference_update_step
         self.action_space = spaces.Discrete(2)
@@ -47,8 +66,9 @@ class Patient(Env):
         self._start_time_randomiser()
         self.time_of_the_day = self.hours[0]
         self.day_of_the_week = self.week_days[0]  # 1 Monday, 7 Sunday
-        self.motion_activity_list = random.choices(['stationary', 'walking'], weights=(1.0, 0.0), k=24) # in last 24 hours
-        self.awake_list = random.choices(['sleeping', 'awake'], weights=(0.15, 0.85), k=24)# insomnia
+        self.motion_activity_list = random.choices(['stationary', 'walking'], weights=(1.0, 0.0),
+                                                   k=24)  # in last 24 hours
+        self.awake_list = random.choices(['sleeping', 'awake'], weights=(0.15, 0.85), k=24)  # insomnia
         self.last_activity_score = np.random.randint(0, 2)  # 0 negative, 1 positive
         self.location = 'home' if 1 < self.time_of_the_day < 7 else np.random.choice(['home', 'other'])
         self._update_emotional_state()
@@ -60,12 +80,6 @@ class Patient(Env):
         self.reset()
 
         self.current_day_of_experiment = 0
-        self.question_1 = question_1
-        self.question_2 = question_2
-        self.question_3 = question_3
-        self.competition_threshold = 0.3
-        self.question_4 = question_4
-        self.question_5 = question_5
         # valence =1 #negative/ positive
         # arousal = 1 # low, mid, high
         # cognitive_load = 0 # low, high
@@ -92,7 +106,7 @@ class Patient(Env):
         self.current_day_of_experiment += 1
         if self.activity_s != 0:
             self.rr.append(self.activity_p / self.activity_s)
-        else: # unsucessful training
+        else:  # unsucessful training
             self.rr.append(np.nan)
             # self.num_notified.append(np.nan)
         self.num_notified.append(self.activity_s)
@@ -102,9 +116,15 @@ class Patient(Env):
         self.h_nonstationary.append(self.motion_activity_list[-24:].count('walking'))
         self.reset()
         if self.habituation:
-            self.behaviour_threshold = self.behaviour_threshold + 0.15 # increase the threshold for performing action
+            self.behaviour_threshold = self.behaviour_threshold + 0.15  # increase the threshold for performing action
 
     def step(self, action: tuple):
+        for i, answer in enumerate(self.patient_answers):
+            self.patient_behaviour[i] = True
+            if answer == "no" and self.reconsider_chance < np.random.random():
+                self.patient_behaviour[i] = False
+            elif answer == "neutral" and 0.5 < np.random.random():
+                self.patient_behaviour[i] = False
 
         motiovation = self.get_motivation()
         ability = self.get_ability()
@@ -142,7 +162,7 @@ class Patient(Env):
         else:
             done = False
         if self.env_steps > self.time_preference_update_step:
-            self.good_time = 2 # update time preference to be in the evening
+            self.good_time = 2  # update time preference to be in the evening
         return self._get_current_state(), reward, done, info
 
     def _get_current_state(self):
@@ -218,27 +238,26 @@ class Patient(Env):
 
         # If I see that I perform health-related activities better than my peers I feel motivated
         perform_better_than_peers = 0
-        if self.question_1:
+        if self.patient_behaviour[0]:
             my_score = sum(self.activity_performed)
-            other_mean_score = self.current_day_of_experiment / 2 # each person by average make one exercise per 2 days
+            other_mean_score = self.current_day_of_experiment / 2  # each person by average make one exercise per 2 days
             if my_score > other_mean_score:
                 perform_better_than_peers = 1
 
         # I am keen to perform a simple activity for a longer time when I want to break my own record
         being_on_fire = 0
-        if self.question_2:
-            if len(self.num_performed) == 0: # it is first day 
+        if self.patient_behaviour[1]:
+            if len(self.num_performed) == 0:  # it is first day
                 being_on_fire = 0
-            being_on_fire = 1 if sum(self.num_performed[-1])>0 else 0
+            else:
+                being_on_fire = 1 if self.num_performed[-1] > 0 else 0
 
         # I am keen to perform a simple activity for a longer time when I compete with others
         competition = 0
-        if self.question_3:
+        if self.patient_behaviour[2]:
             if self.location == 'other' and self.motion_activity_list[-1] == 'walking':
                 if self.competition_threshold > np.random.random():
-                     competition = 1
-        
-
+                    competition = 1
 
         return self.valence + self.has_family + self.last_activity_score + sufficient_sleep + perform_better_than_peers + being_on_fire + competition
 
@@ -267,6 +286,7 @@ class Patient(Env):
         sequence mining SPADE
         """
 
+        number_of_hours_slept = self.awake_list[-24:].count('sleeping')
         n = self.activity_p  # 0  if the activity was already performed twice
         if n == 0:
             not_tired_of_repeating_the_activity = 1
@@ -280,15 +300,14 @@ class Patient(Env):
 
         # When I am stressed I am unlikely to respond to any reminders for health-related activities
         stress = 0
-        if self.question_4:
-            if self.arousal == 2 and self.valence == 0: # function of high arousal and low valence
-                stress = -1 
-        
-        # When I am tired I am unlikely to respond to any reminders for health-related activities
-        tired = 0
-        if self.question_5:
-             tired = -1 if self.number_of_hours_slept < 6 else 0
+        if self.patient_behaviour[3]:
+            if self.arousal == 2 and self.valence == 0:  # function of high arousal and low valence
+                stress = -1
 
+                # When I am tired I am unlikely to respond to any reminders for health-related activities
+        tired = 0
+        if self.patient_behaviour[4]:
+            tired = -1 if number_of_hours_slept < 6 else 0
 
         return confidence + load + not_tired_of_repeating_the_activity + ready + stress + tired
 
@@ -388,10 +407,10 @@ class Patient(Env):
         if self.activity_performed[-1] == 1:
             weights = (0, 1)
         else:
-            threshold = 0.3 # equivalent to 6 h daily
+            threshold = 0.3  # equivalent to 6 h daily
             w_r = self.motion_activity_list.count('walking') / len(self.motion_activity_list)
             w = w_r if w_r < threshold else threshold
-            st = 1-w
+            st = 1 - w
             weights = (st, w)
         self.motion_activity_list.append(random.choices(['stationary', 'walking'], weights=weights, k=1)[0])
 
@@ -412,12 +431,12 @@ class Patient(Env):
              - walking (+) """
 
         if self.activity_p > 0:
-            awake_prb = self.health_sleep[self.time_of_the_day] # healthy sleeping
+            awake_prb = self.health_sleep[self.time_of_the_day]  # healthy sleeping
         else:
             if self.arousal == 2 and self.valence == 0:
-                awake_prb = self.insomnia[self.time_of_the_day]# insomnia
+                awake_prb = self.insomnia[self.time_of_the_day]  # insomnia
             else:
-                awake_prb = self.semihealthy_sleep[self.time_of_the_day]# semi-healthy
+                awake_prb = self.semihealthy_sleep[self.time_of_the_day]  # semi-healthy
 
         now_awake = random.choices(['sleeping', 'awake'], weights=(1 - awake_prb, awake_prb), k=1)
         self.awake_list.append(now_awake[0])
@@ -468,14 +487,14 @@ class Patient(Env):
         neg_factors = insufficient_exercise + annoyed + insufficient_sleep
 
         if self.motion_activity_list[-1] == 'walking':
-            self.valence,  self.arousal = 1, 1
+            self.valence, self.arousal = 1, 1
         else:
             if neg_factors >= 2:
                 self.valence = 0
                 self.arousal = 2
             elif neg_factors == 1:
                 self.valence = random.choices([0, 1], weights=(0.5, 0.5), k=1)[0]
-                self.arousal = random.choices([0, 1, 2], weights=(0.3,0.3, 0.4), k=1)[0]  
+                self.arousal = random.choices([0, 1, 2], weights=(0.3, 0.3, 0.4), k=1)[0]
             else:
                 self.valence = 1
                 self.arousal = random.choices([0, 1, 2], weights=(0.3, 0.4, 0.3), k=1)[0]
@@ -490,11 +509,11 @@ class Patient(Env):
         "notifications at detected breakpoint timing resulted in 46% lower cognitive load compared to randomly-timed
          notifications"
         """
-        if self.activity_s> 0:
+        if self.activity_s > 0:
             self.cognitive_load = 1 if self.activity_p / self.activity_s < 0.5 else 0
         else:
-            self.cognitive_load = np.random.randint(0, 1) 
-            
+            self.cognitive_load = np.random.randint(0, 1)
+
     def _update_patients_activity_score(self):
         """"
         Williams et al (2012) "Does Affective Valence During and Immediately Following a 10-Min Walk Predict Concurrent
@@ -502,9 +521,9 @@ class Patient(Env):
          "During-behavior affect is predictive of concurrent and future physical activity behavior"
 
         """
-        self.last_activity_score = self.valence 
-        
-        
+        self.last_activity_score = self.valence
+
+
 def update_patient_arousal():
     """"
     Kusserow et al (2013) "Modeling arousal phases in daily living using wearable sensors"
@@ -540,7 +559,3 @@ def update_patient_valence():
 
     """
     pass
-
-
-
-
